@@ -3,11 +3,9 @@ const chalk = require('chalk');
 const WebSocket = require('ws');
 const fs = require('fs');
 const readline = require('readline');
-const keypress = require('keypress');
 
 let sockets = [];
 let pingIntervals = [];
-let countdownIntervals = [];
 let potentialPoints = [];
 let countdowns = [];
 let pointsTotals = [];
@@ -76,26 +74,31 @@ function displayAccountData(index) {
 }
 
 function handleUserInput() {
-  keypress(process.stdin);
-
-  process.stdin.on('keypress', (ch, key) => {
-    if (key && key.name === 'a') {
-      currentAccountIndex = (currentAccountIndex - 1 + accounts.length) % accounts.length;
-      displayAccountData(currentAccountIndex);
-    } else if (key && key.name === 'd') {
-      currentAccountIndex = (currentAccountIndex + 1) % accounts.length;
-      displayAccountData(currentAccountIndex);
-    } else if (key && key.name === 'c') {
-      console.log('Exiting the script...');
-      process.exit();
-    }
-    if (key && key.ctrl && key.name === 'c') {
-      process.stdin.pause();
-    }
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
   });
 
-  process.stdin.setRawMode(true);
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+  }
+
   process.stdin.resume();
+  process.stdin.on('data', (key) => {
+    if (key.toString() === 'a') {
+      currentAccountIndex = (currentAccountIndex - 1 + accounts.length) % accounts.length;
+      displayAccountData(currentAccountIndex);
+    } else if (key.toString() === 'd') {
+      currentAccountIndex = (currentAccountIndex + 1) % accounts.length;
+      displayAccountData(currentAccountIndex);
+    } else if (key.toString() === 'c') {
+      console.log('Exiting the script...');
+      process.exit();
+    } else if (key.toString() === '\u0003') { // Ctrl + C
+      console.log('Exiting...');
+      process.exit();
+    }
+  });
 }
 
 async function connectWebSocket(index) {
