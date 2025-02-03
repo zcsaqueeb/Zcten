@@ -18,7 +18,7 @@ let userIds = [];
 let browserIds = [];
 let accessTokens = [];
 let accounts = [];
-let enableAutoRetry = false;
+let enableAutoRetry = false; // Automatically set to 'false' to disable auto-retry
 let currentAccountIndex = 0;
 
 function loadAccounts() {
@@ -41,24 +41,11 @@ function loadAccounts() {
   }
 }
 
-function promptEnableAutoRetry() {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
-
-    rl.question('Do you want to enable auto-retry for account errors? (y/n): ', (answer) => {
-      enableAutoRetry = answer.toLowerCase() === 'y';
-      rl.close();
-      resolve();
-    });
-  });
-}
-
 async function initialize() {
   loadAccounts();
-  await promptEnableAutoRetry();
+
+  // Automatically set enableAutoRetry to 'false' (i.e., no)
+  enableAutoRetry = false;
 
   for (let i = 0; i < accounts.length; i++) {
     potentialPoints[i] = 0;
@@ -83,7 +70,7 @@ function generateBrowserId(index) {
 
 function displayAccountData(index) {
   console.clear();
-  console.log(chalk.cyan(`Account ${index + 1}`));
+  console.log(chalk.cyan(`\nAccount ${index + 1}`));
   console.log(chalk.whiteBright(`Email: ${accounts[index].email}`));
   console.log(`User ID: ${userIds[index]}`);
   console.log(`Browser ID: ${browserIds[index]}`);
@@ -202,6 +189,7 @@ async function getUserId(index) {
       password: accounts[index].password
     }, {
       headers: {
+        'Authorization': `Bearer ${accessTokens[index]}`,
         'Content-Type': 'application/json',
         'x-api-key': 'OwAG3kib1ivOJG4Y0OCZ8lJETa6ypvsDtGmdhcjB',
         'origin': 'https://dashboard.teneo.pro',
@@ -223,7 +211,6 @@ async function getUserId(index) {
     startCountdownAndPoints(index);
     await connectWebSocket(index);
   } catch (error) {
-    console.error(`Error for Account ${index + 1}:`, error.response ? error.response.data : error.message);
     messages[index] = `Error: ${error.message}`;
     if (index === currentAccountIndex) {
       displayAccountData(index);
