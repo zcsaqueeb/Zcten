@@ -1,525 +1,154 @@
 const axios = require('axios');
 const chalk = require('chalk');
 const WebSocket = require('ws');
-const { HttpsProxyAgent } = require('https-proxy-agent');
 const fs = require('fs');
-const readline = require('readline');
 const keypress = require('keypress');
 
+let accounts = [];
 let sockets = [];
 let pingIntervals = [];
-let countdownIntervals = [];
-let potentialPoints = [];
-let countdowns = [];
-let pointsTotals = [];
-let pointsToday = [];
-let lastUpdateds = [];
-let messages = [];
-let userIds = [];
-let browserIds = [];
-let proxies = [];
-let accessTokens = [];
-let accounts = [];
-let useProxy = false;
-let enableAutoRetry = false;
+let userData = [];
 let currentAccountIndex = 0;
+const version = "v0.2";
+const wsUrl = "wss://secure.ws.teneo.pro/websocket";
+const loginUrl = "https://auth.teneo.pro/api/login";
 
+// Load accounts from file
 function loadAccounts() {
-  if (!fs.existsSync('account.txt')) {
-    console.error('account.txt not found. Please add the file with account data.');
-    process.exit(1);
-  }
-
-  try {
-    const data = fs.readFileSync('account.txt', 'utf8');
-    accounts = data.split('\n').map(line => {
-      const [email, password] = line.split(',');
-      if (email && password) {
-        return { email: email.trim(), password: password.trim() };
-      }
-      return null;
-    }).filter(account => account !== null);
-  } catch (err) {
-    console.error('Failed to load accounts:', err);
-  }
-}
-
-function loadProxies() {
-  if (!fs.existsSync('proxy.txt')) {
-    console.error('proxy.txt not found. Please add the file with proxy data.');
-    process.exit(1);
-  }
-
-  try {
-    const data = fs.readFileSync('proxy.txt', 'utf8');
-    proxies = data.split('\n').map(line => line.trim()).filter(line => line);
-  } catch (err) {
-    console.error('Failed to load proxies:', err);
-  }
-}
-
-function normalizeProxyUrl(proxy) {
-  if (!proxy.startsWith('http://') && !proxy.startsWith('https://')) {
-    proxy = 'http://' + proxy;
-  }
-  return proxy;
-}
-
-function promptUseProxy() {
-  return new Promise((resolve) => {
-    displayHeader();
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
-
-    rl.question('Do you want to use a proxy? (y/n): ', (answer) => {
-      useProxy = answer.toLowerCase() === 'y';
-      rl.close();
-      resolve();
-    });
-  });
-}
-
-function promptEnableAutoRetry() {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
-
-    rl.question('Do you want to enable auto-retry for account errors? (y/n): ', (answer) => {
-      enableAutoRetry = answer.toLowerCase() === 'y';
-      rl.close();
-      resolve();
-    });
-  });
-}
-
-async function initialize() {
-  loadAccounts();
-  loadProxies();
-  await promptUseProxy();
-  await promptEnableAutoRetry();
-
-  if (useProxy && proxies.length < accounts.length) {
-    console.error('Not enough proxies for the number of accounts. Please add more proxies.');
-    process.exit(1);
-  }
-
-  for (let i = 0; i < accounts.length; i++) {
-    potentialPoints[i] = 0;
-    countdowns[i] = "Calculating...";
-    pointsTotals[i] = 0;
-    pointsToday[i] = 0;
-    lastUpdateds[i] = null;
-    messages[i] = '';
-    userIds[i] = null;
-    browserIds[i] = null;
-    accessTokens[i] = null;
-    getUserId(i);
-  }
-
-  displayAccountData(currentAccountIndex);
-  handleUserInput();
-}
-
-function generateBrowserId(index) {
-  return `browserId-${index}-${Math.random().toString(36).substring(2, 15)}`;
-}
-
-function displayHeader() {
-  const width = process.stdout.columns;
-  
-  // ANSI color codes
-  const colors = {
-    reset: "\x1b[0m",
-    bright: "\x1b[1m",
-    dim: "\x1b[2m",
-    underscore: "\x1b[4m",
-    blink: "\x1b[5m",
-    reverse: "\x1b[7m",
-    hidden: "\x1b[8m",
-    
-    // Foreground (text) colors
-    fg: {
-      black: "\x1b[30m",
-      red: "\x1b[31m",
-      green: "\x1b[32m",
-      yellow: "\x1b[33m",
-      blue: "\x1b[34m",
-      magenta: "\x1b[35m",
-      cyan: "\x1b[36m",
-      white: "\x1b[37m",
-      crimson: "\x1b[38m"
-    },
-    
-    // Background colors
-    bg: {
-      black: "\x1b[40m",
-      red: "\x1b[41m",
-      green: "\x1b[42m",
-      yellow: "\x1b[43m",
-      blue: "\x1b[44m",
-      magenta: "\x1b[45m",
-      cyan: "\x1b[46m",
-      white: "\x1b[47m",
-      crimson: "\x1b[48m"
+    if (!fs.existsSync('account.txt')) {
+        console.error('Error: account.txt not found.');
+        process.exit(1);
     }
-  };
-
-  const headerLines = [
-    `${colors.fg.cyan}░▀▀█░█▀█░▀█▀░█▀█${colors.reset}`,
-    `${colors.fg.cyan}░▄▀░░█▀█░░█░░█░█${colors.reset}`,
-    `${colors.fg.cyan}░▀▀▀░▀░▀░▀▀▀░▀░▀${colors.reset}`,
-    `${colors.fg.yellow}╔══════════════════════════════════╗${colors.reset}`,
-    `${colors.fg.yellow}║                                  ║${colors.reset}`,
-    `${colors.fg.yellow}║  ${colors.fg.magenta}ZAIN ARAIN${colors.reset}                      ${colors.fg.yellow}║${colors.reset}`,
-    `${colors.fg.yellow}║  ${colors.fg.magenta}AUTO SCRIPT MASTER${colors.reset}              ${colors.fg.yellow}║${colors.reset}`,
-    `${colors.fg.yellow}║                                  ║${colors.reset}`,
-    `${colors.fg.yellow}║  ${colors.fg.cyan}JOIN TELEGRAM CHANNEL NOW!${colors.reset}      ${colors.fg.yellow}║${colors.reset}`,
-    `${colors.fg.yellow}║  ${colors.fg.blue}https://t.me/AirdropScript6${colors.reset}              ${colors.fg.yellow}║${colors.reset}`,
-    `${colors.fg.yellow}║  ${colors.fg.blue}@AirdropScript6 - OFFICIAL${colors.reset}      ${colors.fg.yellow}║${colors.reset}`,
-    `${colors.fg.yellow}║  ${colors.fg.blue}CHANNEL${colors.reset}                         ${colors.fg.yellow}║${colors.reset}`,
-    `${colors.fg.yellow}║                                  ║${colors.reset}`,
-    `${colors.fg.yellow}║  ${colors.fg.green}FAST - RELIABLE - SECURE${colors.reset}        ${colors.fg.yellow}║${colors.reset}`,
-    `${colors.fg.yellow}║  ${colors.fg.green}SCRIPTS EXPERT${colors.reset}                  ${colors.fg.yellow}║${colors.reset}`,
-    `${colors.fg.yellow}║                                  ║${colors.reset}`,
-    `${colors.fg.yellow}╚══════════════════════════════════╝${colors.reset}`
-  ];
-
-  // Center the header
-  const padding = Math.max(0, Math.floor((width - headerLines[0].length) / 2));
-  const paddedHeader = headerLines.map(line => ' '.repeat(padding) + line);
-
-  console.log("");
-  headerLines.forEach(line => {
-    const padding = Math.max(0, Math.floor((width - line.length) / 2));
-    console.log(chalk.green(' '.repeat(padding) + line));
-  });
-  console.log("");
-  const instructions = "Use 'A' to switch to the previous account, 'D' to switch to the next account, 'C' to exit.";
-  const instructionsPadding = Math.max(0, Math.floor((width - instructions.length) / 2));
-  console.log(chalk.cyan(' '.repeat(instructionsPadding) + instructions));
+    accounts = fs.readFileSync('account.txt', 'utf8')
+        .split('\n')
+        .map(line => {
+            const [email, password] = line.split(',').map(s => s.trim());
+            return email && password ? { email, password } : null;
+        })
+        .filter(Boolean);
 }
 
-function displayAccountData(index) {
-  console.clear();
-  displayHeader();
-
-  const width = process.stdout.columns;
-  const separatorLine = '_'.repeat(width);
-  const accountHeader = `Account ${index + 1}`;
-  const padding = Math.max(0, Math.floor((width - accountHeader.length) / 2));
-
-  console.log(chalk.cyan(separatorLine));
-  console.log(chalk.cyan(' '.repeat(padding) + chalk.bold(accountHeader)));
-  console.log(chalk.cyan(separatorLine));
-
-  console.log(chalk.whiteBright(`Email: ${accounts[index].email}`));
-  console.log(`User ID: ${userIds[index]}`);
-  console.log(`Browser ID: ${browserIds[index]}`);
-  console.log(chalk.green(`Points Total: ${pointsTotals[index]}`));
-  console.log(chalk.green(`Points Today: ${pointsToday[index]}`));
-  console.log(chalk.whiteBright(`Message: ${messages[index]}`));
-
-  const proxy = proxies[index % proxies.length];
-  if (useProxy && proxy) {
-    console.log(chalk.hex('#FFA500')(`Proxy: ${proxy}`));
-  } else {
-    console.log(chalk.hex('#FFA500')(`Proxy: Not using proxy`));
-  }
-
-  console.log(chalk.cyan(separatorLine));
-  console.log("\nStatus:");
-
-  if (messages[index].startsWith("Error:")) {
-    console.log(chalk.red(`Account ${index + 1}: ${messages[index]}`));
-  } else {
-    console.log(`Account ${index + 1}: Potential Points: ${potentialPoints[index]}, Countdown: ${countdowns[index]}`);
-  }
-}
-
-function handleUserInput() {
-  keypress(process.stdin);
-
-  process.stdin.on('keypress', (ch, key) => {
-    if (key && key.name === 'a') {
-      currentAccountIndex = (currentAccountIndex - 1 + accounts.length) % accounts.length;
-      console.log(`Switched to account index: ${currentAccountIndex}`);
-      displayAccountData(currentAccountIndex);
-    } else if (key && key.name === 'd') {
-      currentAccountIndex = (currentAccountIndex + 1) % accounts.length;
-      console.log(`Switched to account index: ${currentAccountIndex}`);
-      displayAccountData(currentAccountIndex);
-    } else if (key && key.name === 'c') {
-      console.log('Exiting the script...');
-      process.exit();
+// Authenticate all accounts in parallel
+async function authenticateAll() {
+    console.log(chalk.cyan("Logging in..."));
+    try {
+        const authPromises = accounts.map((account, index) => authenticateAccount(account, index));
+        await Promise.all(authPromises);
+        console.log(chalk.green("All accounts authenticated successfully!"));
+    } catch (error) {
+        console.error(chalk.red("Authentication error: "), error.message);
     }
-    if (key && key.ctrl && key.name === 'c') {
-      process.stdin.pause();
-    }
-  });
-
-  process.stdin.setRawMode(true);
-  process.stdin.resume();
 }
 
-async function connectWebSocket(index) {
-  if (sockets[index]) return;
-  const version = "v0.2";
-  const url = "wss://secure.ws.teneo.pro";
-  const wsUrl = `${url}/websocket?accessToken=${encodeURIComponent(accessTokens[index])}&version=${encodeURIComponent(version)}`;
+// Authenticate a single account
+async function authenticateAccount(account, index) {
+    try {
+        const response = await axios.post(loginUrl, {
+            email: account.email,
+            password: account.password
+        }, { headers: { 'Content-Type': 'application/json' } });
 
-  const proxy = proxies[index % proxies.length];
-  const agent = useProxy && proxy ? new HttpsProxyAgent(normalizeProxyUrl(proxy)) : null;
+        userData[index] = {
+            email: account.email,
+            userId: response.data.user.id,
+            accessToken: response.data.access_token,
+            pointsTotal: 0,
+            pointsToday: 0,
+            message: "Connected successfully"
+        };
 
-  sockets[index] = new WebSocket(wsUrl, { agent });
+        connectWebSocket(index);
+    } catch (error) {
+        console.error(`Error logging in ${account.email}: ${error.message}`);
+    }
+}
 
-  sockets[index].onopen = async () => {
-    lastUpdateds[index] = new Date().toISOString();
-    console.log(`Account ${index + 1} Connected`, lastUpdateds[index]);
-    startPinging(index);
-    startCountdownAndPoints(index);
-  };
-
-  sockets[index].onmessage = async (event) => {
-    const data = JSON.parse(event.data);
-    if (data.pointsTotal !== undefined && data.pointsToday !== undefined) {
-      lastUpdateds[index] = new Date().toISOString();
-      pointsTotals[index] = data.pointsTotal;
-      pointsToday[index] = data.pointsToday;
-      messages[index] = data.message;
-
-      if (index === currentAccountIndex) {
-        displayAccountData(index);
-      }
+// Connect WebSocket with reconnection strategy
+function connectWebSocket(index, retryCount = 0) {
+    if (retryCount > 5) {
+        console.error(`Account ${index + 1} exceeded max reconnection attempts.`);
+        return;
     }
 
-    if (data.message === "Pulse from server") {
-      console.log(`Pulse from server received for Account ${index + 1}. Start pinging...`);
-      setTimeout(() => {
+    const token = userData[index]?.accessToken;
+    if (!token) return;
+
+    sockets[index] = new WebSocket(`${wsUrl}?accessToken=${encodeURIComponent(token)}&version=${version}`);
+
+    sockets[index].onopen = () => {
+        console.log(`Account ${index + 1} Connected`);
         startPinging(index);
-      }, 10000);
-    }
-  };
+    };
 
-  sockets[index].onclose = () => {
-    console.log(`Account ${index + 1} Disconnected`);
-    reconnectWebSocket(index);
-  };
+    sockets[index].onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.pointsTotal !== undefined && data.pointsToday !== undefined) {
+            userData[index].pointsTotal = data.pointsTotal;
+            userData[index].pointsToday = data.pointsToday;
+            if (index === currentAccountIndex) displayAccountData(index);
+        }
+    };
 
-  sockets[index].onerror = (error) => {
-    console.error(`WebSocket error for Account ${index + 1}:`, error);
-  };
+    sockets[index].onclose = () => {
+        console.log(`Account ${index + 1} Disconnected. Reconnecting...`);
+        setTimeout(() => connectWebSocket(index, retryCount + 1), Math.min(1000 * (2 ** retryCount), 30000));
+    };
+
+    sockets[index].onerror = (error) => {
+        console.error(`WebSocket error for Account ${index + 1}:`, error.message);
+    };
 }
 
-async function reconnectWebSocket(index) {
-  const version = "v0.2";
-  const url = "wss://secure.ws.teneo.pro";
-  const wsUrl = `${url}/websocket?accessToken=${encodeURIComponent(accessTokens[index])}&version=${encodeURIComponent(version)}`;
-
-  const proxy = proxies[index % proxies.length];
-  const agent = useProxy && proxy ? new HttpsProxyAgent(normalizeProxyUrl(proxy)) : null;
-
-  if (sockets[index]) {
-    sockets[index].removeAllListeners();
-  }
-
-  sockets[index] = new WebSocket(wsUrl, { agent });
-
-  sockets[index].onopen = async () => {
-    lastUpdateds[index] = new Date().toISOString();
-    console.log(`Account ${index + 1} Reconnected`, lastUpdateds[index]);
-    startPinging(index);
-    startCountdownAndPoints(index);
-  };
-
-  sockets[index].onmessage = async (event) => {
-    const data = JSON.parse(event.data);
-    if (data.pointsTotal !== undefined && data.pointsToday !== undefined) {
-      lastUpdateds[index] = new Date().toISOString();
-      pointsTotals[index] = data.pointsTotal;
-      pointsToday[index] = data.pointsToday;
-      messages[index] = data.message;
-
-      if (index === currentAccountIndex) {
-        displayAccountData(index);
-      }
-    }
-
-    if (data.message === "Pulse from server") {
-      console.log(`Pulse from server received for Account ${index + 1}. Start pinging...`);
-      setTimeout(() => {
-        startPinging(index);
-      }, 10000);
-    }
-  };
-
-  sockets[index].onclose = () => {
-    console.log(`Account ${index + 1} Disconnected again`);
-    setTimeout(() => {
-      reconnectWebSocket(index);
-    }, 5000);
-  };
-
-  sockets[index].onerror = (error) => {
-    console.error(`WebSocket error for Account ${index + 1}:`, error);
-  };
-}
-
-function startCountdownAndPoints(index) {
-  clearInterval(countdownIntervals[index]);
-  updateCountdownAndPoints(index);
-  countdownIntervals[index] = setInterval(() => updateCountdownAndPoints(index), 1000);
-}
-
-async function updateCountdownAndPoints(index) {
-  const restartThreshold = 60000;
-  const now = new Date();
-
-  if (!lastUpdateds[index]) {
-    lastUpdateds[index] = {};
-  }
-
-  if (countdowns[index] === "Calculating...") {
-    const lastCalculatingTime = lastUpdateds[index].calculatingTime || now;
-    const calculatingDuration = now.getTime() - lastCalculatingTime.getTime();
-
-    if (calculatingDuration > restartThreshold) {
-      reconnectWebSocket(index);
-      return;
-    }
-  }
-
-  if (lastUpdateds[index]) {
-    const nextHeartbeat = new Date(lastUpdateds[index]);
-    nextHeartbeat.setMinutes(nextHeartbeat.getMinutes() + 15);
-    const diff = nextHeartbeat.getTime() - now.getTime();
-
-    if (diff > 0) {
-      const minutes = Math.floor(diff / 60000);
-      const seconds = Math.floor((diff % 60000) / 1000);
-      countdowns[index] = `${minutes}m ${seconds}s`;
-
-      const maxPoints = 25;
-      const timeElapsed = now.getTime() - new Date(lastUpdateds[index]).getTime();
-      const timeElapsedMinutes = timeElapsed / (60 * 1000);
-      let newPoints = Math.min(maxPoints, (timeElapsedMinutes / 15) * maxPoints);
-      newPoints = parseFloat(newPoints.toFixed(2));
-
-      if (Math.random() < 0.1) {
-        const bonus = Math.random() * 2;
-        newPoints = Math.min(maxPoints, newPoints + bonus);
-        newPoints = parseFloat(newPoints.toFixed(2));
-      }
-
-      potentialPoints[index] = newPoints;
-    } else {
-      countdowns[index] = "Calculating, it might take a minute before starting...";
-      potentialPoints[index] = 25;
-
-      lastUpdateds[index].calculatingTime = now;
-    }
-  } else {
-    countdowns[index] = "Calculating, it might take a minute before starting...";
-    potentialPoints[index] = 0;
-
-    lastUpdateds[index].calculatingTime = now;
-  }
-
-  if (index === currentAccountIndex) {
-    displayAccountData(index);
-  }
-}
-
+// Start periodic WebSocket pings
 function startPinging(index) {
-  pingIntervals[index] = setInterval(async () => {
-    if (sockets[index] && sockets[index].readyState === WebSocket.OPEN) {
-      const proxy = proxies[index % proxies.length];
-      const agent = useProxy && proxy ? new HttpsProxyAgent(normalizeProxyUrl(proxy)) : null;
-
-      sockets[index].send(JSON.stringify({ type: "PING" }), { agent });
-      if (index === currentAccountIndex) {
-        displayAccountData(index);
-      }
-    }
-  }, 60000);
+    pingIntervals[index] = setInterval(() => {
+        if (sockets[index]?.readyState === WebSocket.OPEN) {
+            sockets[index].send(JSON.stringify({ type: "PING" }));
+        }
+    }, 60000);
 }
 
-function stopPinging(index) {
-  if (pingIntervals[index]) {
-    clearInterval(pingIntervals[index]);
-    pingIntervals[index] = null;
-  }
+// Display account data
+function displayAccountData(index) {
+    console.clear();
+    const account = userData[index];
+    if (!account) return;
+    
+    console.log(chalk.cyan(`\nAccount ${index + 1}`));
+    console.log(chalk.whiteBright(`Email: ${account.email}`));
+    console.log(`User ID: ${account.userId}`);
+    console.log(chalk.green(`Points Total: ${account.pointsTotal}`));
+    console.log(chalk.green(`Points Today: ${account.pointsToday}`));
+    console.log(chalk.whiteBright(`Message: ${account.message}`));
 }
 
-function restartAccountProcess(index) {
-  disconnectWebSocket(index);
-  connectWebSocket(index);
-  console.log(`WebSocket restarted for index: ${index}`);
+// Handle user input
+function handleUserInput() {
+    keypress(process.stdin);
+
+    process.stdin.on('keypress', (ch, key) => {
+        if (!key) return;
+        if (key.name === 'a') {
+            currentAccountIndex = (currentAccountIndex - 1 + accounts.length) % accounts.length;
+        } else if (key.name === 'd') {
+            currentAccountIndex = (currentAccountIndex + 1) % accounts.length;
+        } else if (key.name === 'c') {
+            console.log('Exiting the script...');
+            process.exit();
+        }
+        displayAccountData(currentAccountIndex);
+    });
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
 }
 
-async function getUserId(index) {
-  const loginUrl = "https://auth.teneo.pro/api/login";
-
-  const proxy = proxies[index % proxies.length];
-  const agent = useProxy && proxy ? new HttpsProxyAgent(normalizeProxyUrl(proxy)) : null;
-
-  try {
-    const response = await axios.post(loginUrl, {
-    email: accounts[index].email,
-    password: accounts[index].password
-  }, {
-    httpsAgent: agent,
-    headers: {
-      'Authorization': `Bearer ${accessTokens[index]}`,
-      'Content-Type': 'application/json',
-      'authority': 'auth.teneo.pro',
-      'x-api-key': 'OwAG3kib1ivOJG4Y0OCZ8lJETa6ypvsDtGmdhcjB',
-      'accept': 'application/json, text/plain, */*',
-      'accept-encoding': 'gzip, deflate, br, zstd',
-      'accept-language': 'en-US,en;q=0.9,id;q=0.8',
-      'origin': 'https://dashboard.teneo.pro',
-      'referer': 'https://dashboard.teneo.pro/',
-      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
-      'sec-fetch-dest': 'empty',
-      'sec-fetch-mode': 'cors',
-      'sec-fetch-site': 'same-site',
-      'sec-ch-ua': '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"'
-    }
-  });
-
-    const { user, access_token } = response.data;
-    userIds[index] = user.id;
-    accessTokens[index] = access_token;
-    browserIds[index] = generateBrowserId(index);
-    messages[index] = "Connected successfully";
-
-    if (index === currentAccountIndex) {
-      displayAccountData(index);
-    }
-
-    console.log(`User Data for Account ${index + 1}:`, user);
-    startCountdownAndPoints(index);
-    await connectWebSocket(index);
-  } catch (error) {
-    const errorMessage = error.response ? error.response.data.message : error.message;
-    messages[index] = `Error: ${errorMessage}`;
-
-    if (index === currentAccountIndex) {
-      displayAccountData(index);
-    }
-
-    console.error(`Error for Account ${index + 1}:`, errorMessage);
-
-    if (enableAutoRetry) {
-      console.log(`Retrying account ${index + 1} in 3 minutes...`);
-      setTimeout(() => getUserId(index), 180000);
-    }
-  }
+// Initialize script
+async function initialize() {
+    loadAccounts();
+    await authenticateAll();
+    displayAccountData(currentAccountIndex);
+    handleUserInput();
 }
 
 initialize();
